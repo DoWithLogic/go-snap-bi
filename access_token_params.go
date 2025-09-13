@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/DoWithLogic/snap/types"
+	"github.com/DoWithLogic/go-snap-bi/types"
 )
 
 type (
