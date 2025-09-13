@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/DoWithLogic/snap/helpers"
-	"github.com/DoWithLogic/snap/types"
+	"github.com/DoWithLogic/go-snap-bi/helpers"
+	"github.com/DoWithLogic/go-snap-bi/types"
 )
 
 // TokenType represents the type of SNAP BI token.

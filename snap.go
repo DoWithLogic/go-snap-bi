@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DoWithLogic/snap/helpers"
+	"github.com/DoWithLogic/go-snap-bi/helpers"
 )
 
 type Client struct {
