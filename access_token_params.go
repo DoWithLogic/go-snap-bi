@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/DoWithLogic/snap/v1/types"
+	"github.com/DoWithLogic/snap/types"
 )
 
 type (

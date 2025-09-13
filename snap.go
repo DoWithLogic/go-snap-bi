@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/DoWithLogic/snap/v1/helpers"
+	"github.com/DoWithLogic/snap/helpers"
 )
 
 type Client struct {
