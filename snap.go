@@ -29,21 +29,6 @@ type Client struct {
 }
 
 // New initializes a new SNAP BI client with the provided configuration.
-//
-// Parameters:
-//   - clientType: Determines whether the client operates in B2B or B2B2C mode
-//   - privateKey: PEM-encoded RSA private key string used for request signing
-//   - clientKey: SNAP BI client identifier provided by the platform
-//   - domainAPI: Base URL for the SNAP BI API (sandbox or production environment)
-//   - opts: Optional configuration using ClientOption functions
-//
-// Returns:
-//   - *Client: Configured SNAP BI client instance
-//   - error: Validation or initialization errors
-//
-// Example:
-//
-//	client, err := snap.New(types.B2B, privateKey, "client123", "https://api.snap.com", snap.WithPartnerID("partner123"))
 func New(clientType types.ClientType, privateKey, clientKey, domainAPI string, opts ...ClientOption) (*Client, error) {
 	cfg := clientConfig{
 		clientType: clientType,
@@ -107,10 +92,6 @@ type clientConfig struct {
 
 // parseRSAPrivateKeyFromPEM parses RSA private keys from PEM format.
 // Supports both PKCS#1 and PKCS#8 private key formats.
-//
-// Returns:
-//   - *rsa.PrivateKey: Parsed RSA private key
-//   - error: Parsing or format validation errors
 func (c *clientConfig) parseRSAPrivateKeyFromPEM() (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(c.privateKey))
 	if block == nil {
@@ -143,13 +124,6 @@ func (c *clientConfig) parseRSAPrivateKeyFromPEM() (*rsa.PrivateKey, error) {
 
 // GenerateNonTransactionSignature generates X-SIGNATURE for non-transaction APIs.
 // The signature is computed as: Base64(RSA-SHA256(privateKey, clientKey|timestamp))
-//
-// Parameters:
-//   - timestamp: Current timestamp string
-//
-// Returns:
-//   - string: Base64-encoded signature
-//   - error: Key parsing or signing errors
 func (c *clientConfig) GenerateNonTransactionSignature(timestamp string) (string, error) {
 	priv, err := c.parseRSAPrivateKeyFromPEM()
 	if err != nil {
@@ -167,16 +141,6 @@ func (c *clientConfig) GenerateNonTransactionSignature(timestamp string) (string
 
 // GenerateTransactionSignature generates X-SIGNATURE for SNAP transaction APIs.
 // The signature is computed as: Base64(RSA-SHA256(privateKey, method:endpoint:bodyHash:timestamp))
-//
-// Parameters:
-//   - method: HTTP method (GET, POST, etc.)
-//   - endpoint: API endpoint path
-//   - body: Request body bytes
-//   - timestamp: Current timestamp string
-//
-// Returns:
-//   - string: Base64-encoded signature
-//   - error: Key parsing or signing errors
 func (c *clientConfig) GenerateTransactionSignature(method, endpoint string, body []byte, timestamp string) (string, error) {
 	minified := minifyRequestBody(body)
 	bodyHashHex := sha256HexLower(minified)
@@ -213,14 +177,6 @@ func minifyRequestBody(requestBody []byte) []byte {
 }
 
 // rsaSignSHA256 signs data using RSA with SHA-256 hashing (PKCS#1 v1.5 padding).
-//
-// Parameters:
-//   - priv: RSA private key
-//   - data: Data to be signed
-//
-// Returns:
-//   - []byte: Signature bytes
-//   - error: Signing errors
 func rsaSignSHA256(priv *rsa.PrivateKey, data []byte) ([]byte, error) {
 	h := sha256.Sum256(data)
 	return rsa.SignPKCS1v15(rand.Reader, priv, crypto.SHA256, h[:])
@@ -236,25 +192,16 @@ func sha256HexLower(data []byte) string {
 type ClientOption func(*clientConfig)
 
 // WithPartnerID sets the partner ID used in transaction APIs.
-//
-// Parameters:
-//   - partnerID: Partner identifier provided by SNAP BI
 func WithPartnerID(partnerID string) ClientOption {
 	return func(cc *clientConfig) { cc.partnerID = &partnerID }
 }
 
 // WithChannelID sets the channel ID used in transaction APIs.
-//
-// Parameters:
-//   - channelID: Channel identifier provided by SNAP BI
 func WithChannelID(channelID string) ClientOption {
 	return func(cc *clientConfig) { cc.channelID = &channelID }
 }
 
 // WithAuthCode sets the authorization code required for B2B2C token acquisition.
-//
-// Parameters:
-//   - authCode: Authorization code obtained from SNAP BI OAuth flow
 func WithAuthCode(authCode string) ClientOption {
 	return func(cc *clientConfig) { cc.authCode = &authCode }
 }
