@@ -15,8 +15,42 @@ go-snap-bi is a work in progress aiming to simplify integrations with the SNAP p
 go get github.com/DoWithLogic/go-snap-bi
 ```
 2. Basic Usage Example:
-```bash
-go get github.com/DoWithLogic/go-snap-bi
+```go
+import (
+    "github.com/DoWithLogic/go-snap-bi"
+    "github.com/DoWithLogic/go-snap-bi/types"
+    "context"
+    "fmt"
+)
+
+func main(){
+    privateKey := `-----BEGIN RSA PRIVATE KEY-----MIIEpAIBAAKCAQEA3...`
+    client, err := snap.New(
+	        types.B2B,
+	        privateKey,
+	        "sandbox-client-key",
+	        "https://api-sandbox.snap.com",
+	        snap.WithPartnerID("test-partner"),
+	        snap.WithChannelID("test-channel"),
+        )
+    
+    if err != nil{
+        panic(err)
+    }
+
+    response, err := client.Registration.CardBind(context.Background(), request)
+    if err != nil{
+        panic(err)
+    }
+
+    fmt.Println(response)
+}
+
+
+
+
+
+
 ```
 Here’s a simple example demonstrating how to use go-snap-bi to create a payment request:
 
