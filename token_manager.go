@@ -4,12 +4,120 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/DoWithLogic/go-snap-bi/helpers"
 	"github.com/DoWithLogic/go-snap-bi/types"
 )
+
+// AccessTokenRequest represents the request structure for obtaining an access token.
+// This is used for B2B client authentication with client credentials grant type.
+type AccessTokenRequest struct {
+	Params
+	// GrantType specifies the OAuth 2.0 grant type, typically "client_credentials" for B2B.
+	GrantType types.GrantType `json:"grantType"`
+
+	// AdditionalInfo contains optional additional parameters for token acquisition.
+	AdditionalInfo types.AdditionalInfo `json:"additionalInfo"`
+}
+
+// AccessTokenResponse represents the response structure for access token acquisition.
+// Contains the authentication token and metadata for API access.
+type AccessTokenResponse struct {
+	// ResponseCode indicates the result of the token request operation.
+	ResponseCode string `json:"responseCode"`
+
+	// ResponseMessage provides descriptive information about the response.
+	ResponseMessage string `json:"responseMessage"`
+
+	// AccessToken is the bearer token used for authenticating subsequent API requests.
+	AccessToken string `json:"accessToken"`
+
+	// TokenType specifies the type of token, typically "Bearer".
+	TokenType string `json:"tokenType"`
+
+	// ExpiresIn indicates the lifetime of the access token in seconds.
+	ExpiresIn string `json:"expiresIn"`
+
+	// AdditionalInfo contains optional additional response parameters.
+	AdditionalInfo types.AdditionalInfo `json:"additionalInfo"`
+}
+
+// toToken converts an AccessTokenResponse to an internal token representation.
+// Handles expiration time calculation from the expiresIn value.
+func (a AccessTokenResponse) toToken() *token {
+	expiresIn, _ := strconv.Atoi(a.ExpiresIn)
+
+	return &token{
+		AccessToken: a.AccessToken,
+		TokenType:   a.TokenType,
+		ExpiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
+	}
+}
+
+// AccessTokenB2B2CRequest represents the request structure for B2B2C access token acquisition.
+// Supports both authorization code and refresh token grant types for consumer authentication.
+type AccessTokenB2B2CRequest struct {
+	Params
+	// GrantType specifies the OAuth 2.0 grant type, either "authorization_code" or "refresh_token".
+	GrantType types.GrantType `json:"grantType"`
+
+	// AuthCode is the authorization code obtained from the consumer consent flow.
+	// Required for authorization_code grant type.
+	AuthCode *string `json:"authCode"`
+
+	// RefreshToken is used to obtain new access tokens when refreshing an existing session.
+	// Required for refresh_token grant type.
+	RefreshToken string `json:"refreshToken"`
+
+	// AdditionalInfo contains optional additional parameters for token acquisition.
+	AdditionalInfo types.AdditionalInfo `json:"additionalInfo"`
+}
+
+// AccessTokenB2B2CResponse represents the response structure for B2B2C token acquisition.
+// Contains both access and refresh tokens with their respective expiration times.
+type AccessTokenB2B2CResponse struct {
+	// ResponseCode indicates the result of the token request operation.
+	ResponseCode string `json:"responseCode"`
+
+	// ResponseMessage provides descriptive information about the response.
+	ResponseMessage string `json:"responseMessage"`
+
+	// AccessToken is the bearer token used for authenticating subsequent API requests.
+	AccessToken string `json:"accessToken"`
+
+	// TokenType specifies the type of token, typically "Bearer".
+	TokenType string `json:"tokenType"`
+
+	// AccessTokenExpiryTime specifies the exact expiration time of the access token in RFC3339 format.
+	AccessTokenExpiryTime string `json:"accessTokenExpiryTime"`
+
+	// RefreshToken is used to obtain new access tokens when the current one expires.
+	RefreshToken string `json:"refreshToken"`
+
+	// RefreshTokenExpiryTime specifies the exact expiration time of the refresh token in RFC3339 format.
+	RefreshTokenExpiryTime string `json:"refreshTokenExpiryTime"`
+
+	// AdditionalInfo contains optional additional response parameters.
+	AdditionalInfo types.AdditionalInfo `json:"additionalInfo"`
+}
+
+// toToken converts an AccessTokenB2B2CResponse to an internal token representation.
+// Parses RFC3339 formatted expiration times for both access and refresh tokens.
+func (a AccessTokenB2B2CResponse) toToken() *token {
+	accessExp, _ := time.Parse(time.RFC3339, a.AccessTokenExpiryTime)
+	refreshExp, _ := time.Parse(time.RFC3339, a.RefreshTokenExpiryTime)
+
+	return &token{
+		AccessToken:  a.AccessToken,
+		TokenType:    a.TokenType,
+		ExpiresAt:    accessExp,
+		RefreshToken: a.RefreshToken,
+		RefreshAt:    refreshExp,
+	}
+}
 
 // token represents an access token and related metadata for SNAP BI API authentication.
 type token struct {
