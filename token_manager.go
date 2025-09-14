@@ -2,7 +2,6 @@ package snap
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"sync"
@@ -12,366 +11,248 @@ import (
 	"github.com/DoWithLogic/go-snap-bi/types"
 )
 
-// TokenType represents the type of SNAP BI token.
-type TokenType int
-
-const (
-	TokenTypeB2B TokenType = iota
-	TokenTypeB2B2C
-)
-
-// String returns string representation of TokenType for better debugging
-func (tt TokenType) String() string {
-	switch tt {
-	case TokenTypeB2B:
-		return "B2B"
-	case TokenTypeB2B2C:
-		return "B2B2C"
-	default:
-		return "Unknown"
-	}
-}
-
-// IsValid checks if the token type is supported
-func (tt TokenType) IsValid() bool {
-	return tt == TokenTypeB2B || tt == TokenTypeB2B2C
-}
-
-// Token holds the raw token values and expiry info.
-// Made public for better library usage but with clear documentation
-type Token struct {
+// token represents an access token and related metadata for SNAP BI API authentication.
+type token struct {
+	// AccessToken is the actual bearer token string used for API authentication.
 	AccessToken string
-	TokenType   string
-	ExpiresAt   time.Time
 
-	// Only for B2B2C tokens
+	// TokenType specifies the type of token (usually "Bearer").
+	TokenType string
+
+	// ExpiresAt is the expiration time of the access token.
+	ExpiresAt time.Time
+
+	// RefreshToken is available for B2B2C tokens to obtain new access tokens.
 	RefreshToken string
-	RefreshAt    time.Time
+
+	// RefreshAt is the expiration time of the refresh token (B2B2C only).
+	RefreshAt time.Time
 }
 
-// IsExpired checks if the access token has expired
-func (t *Token) IsExpired() bool {
-	return time.Now().After(t.ExpiresAt)
+// IsExpired checks if the access token has expired.
+func (t *token) IsExpired() bool { return time.Now().After(t.ExpiresAt) }
+
+// IsRefreshExpired checks if the refresh token has expired (B2B2C only).
+func (t *token) IsRefreshExpired() bool { return time.Now().After(t.RefreshAt) }
+
+// CanRefresh determines if the token can be refreshed.
+// Returns true if a refresh token exists and hasn't expired.
+func (t *token) CanRefresh() bool { return t.RefreshToken != "" && !t.IsRefreshExpired() }
+
+// TimeToExpiry returns the duration until the access token expires.
+func (t *token) TimeToExpiry() time.Duration { return time.Until(t.ExpiresAt) }
+
+// defaultRefreshBuffer is the time buffer used to check if a token needs refreshing.
+// Tokens are refreshed before actual expiration to prevent API call failures.
+var defaultRefreshBuffer = 1 * time.Minute
+
+// tokenManager handles caching, refreshing, and acquisition of SNAP BI tokens.
+// It ensures that valid authentication tokens are always available for API calls.
+type tokenManager struct {
+	mu sync.RWMutex // Protects concurrent access to the token
+
+	// t holds the current active token.
+	t *token
+
+	// c holds the client configuration.
+	c clientConfig
+
+	// tp is the HTTP transporter used for API calls.
+	tp Transporter
 }
 
-// IsRefreshExpired checks if the refresh token has expired (B2B2C only)
-func (t *Token) IsRefreshExpired() bool {
-	return time.Now().After(t.RefreshAt)
+// newTokenManager creates a new token manager with the given client configuration and transporter.
+func newTokenManager(c clientConfig, tp Transporter) *tokenManager {
+	return &tokenManager{t: &token{}, c: c, tp: tp}
 }
 
-// CanRefresh determines if the token can be refreshed
-func (t *Token) CanRefresh() bool {
-	return t.RefreshToken != "" && !t.IsRefreshExpired()
-}
-
-// TimeToExpiry returns duration until token expires
-func (t *Token) TimeToExpiry() time.Duration {
-	return time.Until(t.ExpiresAt)
-}
-
-// TokenManagerConfig holds configuration for TokenManager
-type TokenManagerConfig struct {
-	PrivateKey string
-	ClientKey  string
-	AuthCode   string // Required for B2B2C
-
-	// Optional: Custom refresh buffer (default: 5 minutes before expiry)
-	RefreshBuffer time.Duration
-}
-
-// Validate ensures the config has required fields
-func (c *TokenManagerConfig) Validate() error {
-	if c.PrivateKey == "" {
-		return errors.New("private key is required")
-	}
-	if c.ClientKey == "" {
-		return errors.New("client key is required")
-	}
-	if c.RefreshBuffer <= 0 {
-		c.RefreshBuffer = 5 * time.Minute // Default buffer
-	}
-	return nil
-}
-
-// TokenProvider interface for dependency injection and testing
-type TokenProvider interface {
-	B2B(ctx context.Context, request *AccessTokenRequest) (*Token, error)
-	B2B2C(ctx context.Context, request *AccessTokenB2B2CRequest) (*Token, error)
-}
-
-// TokenManager manages SNAP BI tokens with thread-safe operations
-type TokenManager struct {
-	mu sync.RWMutex
-
-	tokens   map[TokenType]*Token
-	provider TokenProvider
-	creds    credentials
-	config   TokenManagerConfig
-}
-
-// NewTokenManager creates a new token manager instance
-func NewTokenManager(config TokenManagerConfig, transporter Transporter) (*TokenManager, error) {
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	creds := credentials{
-		privateKey: config.PrivateKey,
-		clientKey:  config.ClientKey,
-		authCode:   config.AuthCode,
-	}
-
-	return &TokenManager{
-		config:   config,
-		creds:    creds,
-		tokens:   make(map[TokenType]*Token),
-		provider: newTokenProvider(creds, transporter),
-	}, nil
-}
-
-// NewTokenManagerWithProvider creates a token manager with custom provider (useful for testing)
-func NewTokenManagerWithProvider(config TokenManagerConfig, provider TokenProvider) (*TokenManager, error) {
-	if err := config.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	creds := credentials{
-		privateKey: config.PrivateKey,
-		clientKey:  config.ClientKey,
-		authCode:   config.AuthCode,
-	}
-
-	return &TokenManager{
-		config:   config,
-		creds:    creds,
-		tokens:   make(map[TokenType]*Token),
-		provider: provider,
-	}, nil
-}
-
-// GetToken returns a valid token for the given type, refreshing if necessary
-func (m *TokenManager) GetToken(ctx context.Context, tokenType TokenType) (string, error) {
-	if !tokenType.IsValid() {
-		return "", fmt.Errorf("unsupported token type: %v", tokenType)
-	}
-
-	// Try to get existing valid token
-	if token := m.getValidToken(tokenType); token != nil {
+// getToken returns a valid access token, refreshing or acquiring a new one if necessary.
+// It handles both B2B and B2B2C client types and ensures thread-safe token management.
+func (t *tokenManager) getToken(ctx context.Context) (string, error) {
+	if token := t.getValidToken(ctx); token != nil {
 		return token.AccessToken, nil
 	}
-
-	// Refresh or acquire new token
-	return m.refreshToken(ctx, tokenType)
+	return t.refreshOrAcquisitionToken(ctx)
 }
 
-// GetTokenInfo returns the full token information (useful for debugging/monitoring)
-func (m *TokenManager) GetTokenInfo(tokenType TokenType) (*Token, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+// getValidToken returns the current token if it's valid and not near expiry.
+// Returns nil if the token is expired or will expire within the refresh buffer period.
+func (t *tokenManager) getValidToken(_ context.Context) *token {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 
-	token, exists := m.tokens[tokenType]
-	if !exists {
-		return nil, false
-	}
-
-	// Return a copy to prevent external modification
-	tokenCopy := *token
-	return &tokenCopy, true
-}
-
-// InvalidateToken removes a token from the cache (useful for error handling)
-func (m *TokenManager) InvalidateToken(tokenType TokenType) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.tokens, tokenType)
-}
-
-// InvalidateAllTokens removes all cached tokens
-func (m *TokenManager) InvalidateAllTokens() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.tokens = make(map[TokenType]*Token)
-}
-
-// getValidToken safely retrieves a valid token if it exists
-func (m *TokenManager) getValidToken(tokenType TokenType) *Token {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	token, exists := m.tokens[tokenType]
-	if !exists {
+	if time.Now().Add(defaultRefreshBuffer).After(t.t.ExpiresAt) {
 		return nil
 	}
-
-	// Check if token needs refresh (with buffer)
-	if time.Now().Add(m.config.RefreshBuffer).After(token.ExpiresAt) {
-		return nil
-	}
-
-	return token
+	return t.t
 }
 
-// refreshToken handles the token refresh/acquisition logic
-func (m *TokenManager) refreshToken(ctx context.Context, tokenType TokenType) (string, error) {
-	// Use write lock for refresh operations
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// refreshOrAcquisitionToken refreshes an existing token or acquires a new one
+// depending on the client type and current token state.
+// Uses double-check locking pattern for thread safety.
+func (t *tokenManager) refreshOrAcquisitionToken(ctx context.Context) (string, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
-	// Double-check pattern: token might have been refreshed while waiting for lock
-	if token, exists := m.tokens[tokenType]; exists {
-		if time.Now().Add(m.config.RefreshBuffer).Before(token.ExpiresAt) {
-			return token.AccessToken, nil
+	// Double-check pattern: another goroutine might have refreshed the token already
+	if time.Now().Add(defaultRefreshBuffer).Before(t.t.ExpiresAt) {
+		return t.t.AccessToken, nil
+	}
+
+	headers, err := t.generateTokenHeaders()
+	if err != nil {
+		return "", err
+	}
+
+	var request ParamsContainer
+	switch t.c.clientType {
+	case types.B2B:
+		request = &AccessTokenRequest{
+			GrantType: types.ClientCredential,
+			Params:    Params{headers: headers},
 		}
-	}
+	case types.B2B2C:
+		args := &AccessTokenB2B2CRequest{
+			Params:       Params{headers: headers},
+			GrantType:    types.RefreshToken,
+			RefreshToken: t.t.RefreshToken,
+		}
+		if !t.t.CanRefresh() {
+			args.GrantType = types.AuthorizationCode
+			args.AuthCode = t.c.authCode
+		}
 
-	// Generate authentication headers
-	headers, err := m.generateAuthHeaders()
-	if err != nil {
-		return "", fmt.Errorf("failed to generate auth headers: %w", err)
-	}
-
-	var newToken *Token
-
-	switch tokenType {
-	case TokenTypeB2B:
-		newToken, err = m.refreshB2BToken(ctx, headers)
-	case TokenTypeB2B2C:
-		newToken, err = m.refreshB2B2CToken(ctx, headers)
+		request = args
 	default:
-		return "", fmt.Errorf("unsupported token type: %v", tokenType)
+		return "", fmt.Errorf("unsupported client type: %v", t.c.clientType)
 	}
 
+	t.t, err = t.doTokenAcquisition(ctx, request)
 	if err != nil {
-		return "", fmt.Errorf("failed to refresh %v token: %w", tokenType, err)
+		return "", err
 	}
 
-	m.tokens[tokenType] = newToken
-	return newToken.AccessToken, nil
+	return t.t.AccessToken, nil
 }
 
-// generateAuthHeaders creates the required authentication headers
-func (m *TokenManager) generateAuthHeaders() (http.Header, error) {
-	timeStamp := helpers.NewTimeStamp()
-	signature, err := m.creds.generateSignature(timeStamp)
+// generateTokenHeaders builds mandatory headers for token acquisition API calls.
+// Includes timestamp, signature, client key, and content type headers.
+func (t *tokenManager) generateTokenHeaders() (http.Header, error) {
+	timestamp := helpers.NewTimeStamp()
+	signature, err := t.c.GenerateNonTransactionSignature(timestamp)
 	if err != nil {
 		return nil, err
 	}
 
-	headers := make(http.Header)
-	headers.Set("X-TIMESTAMP", timeStamp)
-	headers.Set("X-CLIENT-KEY", m.creds.clientKey)
-	headers.Set("X-SIGNATURE", signature)
-	headers.Set("Content-Type", "application/json")
+	headers := http.Header{}
+	headers.Set(types.X_TIME_STAMP_KEY, timestamp)
+	headers.Set(types.CONTENT_TYPE_KEY, types.MIMEApplicationJSON)
+	headers.Set(types.X_CLIENT_KEY, t.c.clientKey)
+	headers.Set(types.X_SIGNATURE_KEY, signature)
 
 	return headers, nil
 }
 
-// refreshB2BToken handles B2B token refresh
-func (m *TokenManager) refreshB2BToken(ctx context.Context, headers http.Header) (*Token, error) {
-	request := &AccessTokenRequest{
-		GrantType: types.ClientCredential,
-		Params:    Params{Headers: headers},
-	}
-
-	return m.provider.B2B(ctx, request)
-}
-
-// refreshB2B2CToken handles B2B2C token refresh
-func (m *TokenManager) refreshB2B2CToken(ctx context.Context, headers http.Header) (*Token, error) {
-	// Check if we can use refresh token
-	if existingToken, exists := m.tokens[TokenTypeB2B2C]; exists && existingToken.CanRefresh() {
-		request := &AccessTokenB2B2CRequest{
-			Params:       Params{Headers: headers},
-			GrantType:    types.RefreshToken,
-			RefreshToken: existingToken.RefreshToken,
-		}
-		return m.provider.B2B2C(ctx, request)
-	}
-
-	// Fall back to authorization code
-	if m.config.AuthCode == "" {
-		return nil, errors.New("auth code is required for B2B2C token acquisition")
-	}
-
-	request := &AccessTokenB2B2CRequest{
-		Params:    Params{Headers: headers},
-		GrantType: types.AuthorizationCode,
-		AuthCode:  m.config.AuthCode,
-	}
-
-	return m.provider.B2B2C(ctx, request)
-}
-
-// TokenStats provides statistics about token usage (useful for monitoring)
-type TokenStats struct {
-	TokenType     TokenType     `json:"token_type"`
-	HasToken      bool          `json:"has_token"`
-	IsExpired     bool          `json:"is_expired,omitempty"`
-	TimeToExpiry  time.Duration `json:"time_to_expiry,omitempty"`
-	CanRefresh    bool          `json:"can_refresh,omitempty"`
-	RefreshExpiry time.Duration `json:"refresh_expiry,omitempty"`
-}
-
-// GetStats returns statistics for all managed tokens
-func (m *TokenManager) GetStats() map[TokenType]TokenStats {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	stats := make(map[TokenType]TokenStats)
-
-	for _, tokenType := range []TokenType{TokenTypeB2B, TokenTypeB2B2C} {
-		stat := TokenStats{
-			TokenType: tokenType,
+// doTokenAcquisition performs the actual API call to acquire or refresh a token.
+// Handles both B2B and B2B2C token acquisition endpoints.
+func (t *tokenManager) doTokenAcquisition(ctx context.Context, request ParamsContainer) (*token, error) {
+	if t.c.clientType.Is(types.B2B) {
+		response := new(AccessTokenResponse)
+		if err := t.tp.CallWithContext(ctx, http.MethodPost, types.B2BToken, request, response); err != nil {
+			return nil, err
 		}
 
-		if token, exists := m.tokens[tokenType]; exists {
-			stat.HasToken = true
-			stat.IsExpired = token.IsExpired()
-			stat.TimeToExpiry = token.TimeToExpiry()
-			stat.CanRefresh = token.CanRefresh()
-			if token.RefreshToken != "" {
-				stat.RefreshExpiry = time.Until(token.RefreshAt)
-			}
-		}
-
-		stats[tokenType] = stat
+		return response.toToken(), nil
 	}
 
-	return stats
-}
-
-// tokenProviderImple implements the TokenProvider interface for SNAP BI token operations.
-// It handles the actual HTTP requests to obtain access tokens from the SNAP BI API.
-type tokenProviderImple struct {
-	c credentials // SNAP BI API credentials (private key, client key, etc.)
-	t Transporter // HTTP transport layer for making API calls
-}
-
-// newTokenProvider creates a new token provider instance with the specified credentials and transporter.
-func newTokenProvider(c credentials, t Transporter) *tokenProviderImple {
-	return &tokenProviderImple{c: c, t: t}
-}
-
-// B2B obtains a Business-to-Business (B2B) access token from the SNAP BI API.
-// This method is used for server-to-server authentication where your application
-// directly authenticates with SNAP BI using client credentials (private key + client key).
-func (a *tokenProviderImple) B2B(ctx context.Context, request *AccessTokenRequest) (tokenData *Token, err error) {
-	response := new(AccessTokenResponse)
-	if err := a.t.Call(http.MethodPost, "/api/v1/access-token/b2b", types.AccessToken, request, response); err != nil {
-		return tokenData, err
-	}
-
-	return response.toToken(), nil
-}
-
-// B2B2C obtains a Business-to-Business-to-Consumer (B2B2C) access token from the SNAP BI API.
-// B2B2C tokens are used when your application needs to act on behalf of end users
-// and typically have shorter lifespans but include refresh tokens for seamless renewal.
-func (a *tokenProviderImple) B2B2C(ctx context.Context, request *AccessTokenB2B2CRequest) (tokenData *Token, err error) {
 	response := new(AccessTokenB2B2CResponse)
-	if err := a.t.Call(http.MethodPost, "/api/v1/access-token/b2b2c", types.AccessToken, request, response); err != nil {
-		return tokenData, err
+	if err := t.tp.CallWithContext(ctx, http.MethodPost, types.B2B2CToken, request, response); err != nil {
+		return nil, err
 	}
 
 	return response.toToken(), nil
+}
+
+// buildTransactionHeaders constructs headers for transaction API calls.
+// Includes authentication, signature, and client-specific headers.
+// Validates required parameters based on client type (B2B vs B2B2C).
+func (t *tokenManager) buildTransactionHeaders(
+	ctx context.Context,
+	method string,
+	endpoint string,
+	body []byte,
+	request *Params,
+) error {
+	timestamp := helpers.NewTimeStamp()
+
+	signature, err := t.c.GenerateTransactionSignature(method, endpoint, body, timestamp)
+	if err != nil {
+		return err
+	}
+
+	token, err := t.getToken(ctx)
+	if err != nil {
+		return err
+	}
+
+	headers := http.Header{}
+	headers.Set(types.CONTENT_TYPE_KEY, types.MIMEApplicationJSON)
+	headers.Set(types.AUTHORIZATION_KEY, fmt.Sprintf("Bearer %s", token))
+	headers.Set(types.X_TIME_STAMP_KEY, timestamp)
+	headers.Set(types.X_SIGNATURE_KEY, signature)
+
+	// Set client-specific headers based on client type
+	switch t.c.clientType {
+	case types.B2B:
+		if t.c.partnerID == nil {
+			return fmt.Errorf("partner id is required for B2B transaction calls")
+		}
+		headers.Set(types.PARTNER_ID_KEY, *t.c.partnerID)
+
+		if request.Origin != nil {
+			headers.Set(types.ORIGIN_KEY, *request.Origin)
+		}
+		if request.ExternalID != nil {
+			headers.Set(types.EXTERNAL_ID_KEY, *request.ExternalID)
+		}
+		if t.c.channelID == nil {
+			return fmt.Errorf("channel id is required for B2B transaction calls")
+		}
+		headers.Set(types.CHANNEL_ID_KEY, *t.c.channelID)
+
+	case types.B2B2C:
+		if t.c.partnerID == nil {
+			return fmt.Errorf("partner id is required for B2B2C transaction calls")
+		}
+		headers.Set(types.PARTNER_ID_KEY, *t.c.partnerID)
+
+		if request.AuthorizationCustomer != nil {
+			headers.Set(types.AUTHORIZATION_CUSTOMER_KEY, *request.AuthorizationCustomer)
+		}
+		if request.Origin != nil {
+			headers.Set(types.ORIGIN_KEY, *request.Origin)
+		}
+		if request.ExternalID != nil {
+			headers.Set(types.EXTERNAL_ID_KEY, *request.ExternalID)
+		}
+		if request.IPAddress != nil {
+			headers.Set(types.IP_ADDRESS_KEY, *request.IPAddress)
+		}
+		if request.DeviceID != nil {
+			headers.Set(types.DEVICE_ID_KEY, *request.DeviceID)
+		}
+		if t.c.channelID == nil {
+			return fmt.Errorf("channel id is required for B2B2C transaction calls")
+		}
+		headers.Set(types.CHANNEL_ID_KEY, *t.c.channelID)
+		if request.Latitude != nil {
+			headers.Set(types.LATITUDE_KEY, *request.Latitude)
+		}
+		if request.Longitude != nil {
+			headers.Set(types.LONGITUDE_KEY, *request.Longitude)
+		}
+	}
+	request.setHeaders(headers)
+
+	return nil
 }

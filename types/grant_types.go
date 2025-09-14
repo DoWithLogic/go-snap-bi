@@ -7,3 +7,5 @@ const (
 	AuthorizationCode GrantType = "authorization_code"
 	RefreshToken      GrantType = "refresh_token"
 )
+
+func (g GrantType) String() string { return string(g) }

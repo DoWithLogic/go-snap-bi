@@ -68,10 +68,10 @@ func (c *TransporterConfig) Validate() error {
 // Transporter is the interface responsible for executing API calls to SNAP BI.
 type Transporter interface {
 	// Call performs an HTTP request against the SNAP BI API.
-	Call(method, path string, requestType types.RequestType, params ParamsContainer, response any) error
+	Call(method string, path types.Path, requestType types.RequestType, params ParamsContainer, response any) error
 
 	// CallWithContext performs an HTTP request with context support for cancellation and timeouts.
-	CallWithContext(ctx context.Context, method, path string, requestType types.RequestType, params ParamsContainer, response any) error
+	CallWithContext(ctx context.Context, method string, path types.Path, params ParamsContainer, response any) error
 }
 
 // transporterImpl implements the Transporter interface for SNAP BI API communication.
@@ -110,12 +110,12 @@ func NewTransporter(cfg *TransporterConfig) (Transporter, error) {
 
 // Call executes an HTTP request to the SNAP BI API without context.
 // This is a convenience method that uses context.Background().
-func (t *transporterImpl) Call(method, path string, requestType types.RequestType, params ParamsContainer, response any) error {
-	return t.CallWithContext(context.Background(), method, path, requestType, params, response)
+func (t *transporterImpl) Call(method string, path types.Path, requestType types.RequestType, params ParamsContainer, response any) error {
+	return t.CallWithContext(context.Background(), method, path, params, response)
 }
 
 // CallWithContext executes an HTTP request to the SNAP BI API with context support.
-func (t *transporterImpl) CallWithContext(ctx context.Context, method, path string, requestType types.RequestType, params ParamsContainer, response any) error {
+func (t *transporterImpl) CallWithContext(ctx context.Context, method string, path types.Path, params ParamsContainer, response any) error {
 	// Prepare request body
 	body, err := t.prepareRequestBody(params)
 	if err != nil {
@@ -155,22 +155,22 @@ func (t *transporterImpl) isNilPointer(v interface{}) bool {
 }
 
 // createRequest builds an HTTP request with proper headers and body.
-func (t *transporterImpl) createRequest(ctx context.Context, method, path string, body []byte, params ParamsContainer) (*http.Request, error) {
-	url := t.domainAPI + path
-
-	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
+func (t *transporterImpl) createRequest(ctx context.Context, method string, path types.Path, body []byte, params ParamsContainer) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, path.GenerateEndpoint(t.domainAPI), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 
 	// Set default content type
-	req.Header.Set("Content-Type", "application/json")
+	if contentType := req.Header.Get(types.CONTENT_TYPE_KEY); contentType == "" {
+		req.Header.Set(types.CONTENT_TYPE_KEY, types.MIMEApplicationJSON)
+	}
 
 	// Apply custom headers from params
 	if params != nil {
-		if requestParams := params.GetParams(); requestParams.Headers != nil {
+		if requestParams := params.GetParams(); requestParams.headers != nil {
 			// Copy headers to avoid modifying the original
-			for key, values := range requestParams.Headers {
+			for key, values := range requestParams.headers {
 				req.Header[key] = append(req.Header[key], values...)
 			}
 		}
