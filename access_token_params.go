@@ -24,10 +24,10 @@ type (
 	}
 )
 
-func (a AccessTokenResponse) toToken() *Token {
+func (a AccessTokenResponse) toToken() *token {
 	expiresIn, _ := strconv.Atoi(a.ExpiresIn)
 
-	return &Token{
+	return &token{
 		AccessToken: a.AccessToken,
 		TokenType:   a.TokenType,
 		ExpiresAt:   time.Now().Add(time.Duration(expiresIn) * time.Second),
@@ -38,7 +38,7 @@ type (
 	AccessTokenB2B2CRequest struct {
 		Params
 		GrantType      types.GrantType      `json:"grantType"`
-		AuthCode       string               `json:"authCode"`
+		AuthCode       *string              `json:"authCode"`
 		RefreshToken   string               `json:"refreshToken"`
 		AdditionalInfo types.AdditionalInfo `json:"additionalInfo"`
 	}
@@ -55,11 +55,11 @@ type (
 	}
 )
 
-func (a AccessTokenB2B2CResponse) toToken() *Token {
+func (a AccessTokenB2B2CResponse) toToken() *token {
 	accessExp, _ := time.Parse(time.RFC3339, a.AccessTokenExpiryTime)
 	refreshExp, _ := time.Parse(time.RFC3339, a.RefreshTokenExpiryTime)
 
-	return &Token{
+	return &token{
 		AccessToken:  a.AccessToken,
 		TokenType:    a.TokenType,
 		ExpiresAt:    accessExp,
